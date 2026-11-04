@@ -1,0 +1,82 @@
+# Azure DevOps Pipeline Configuration
+# This file can be used with Azure DevOps for CI/CD
+
+trigger:
+- main
+- develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  pythonVersion: '3.11'
+  azureServiceConnection: 'Azure-Service-Connection'
+  webAppName: 'expense-categorizer-prod'
+  resourceGroupName: 'expense-categorizer-rg'
+
+stages:
+- stage: Build
+  displayName: Build and Test
+  jobs:
+  - job: BuildJob
+    displayName: Build
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+      displayName: 'Use Python $(pythonVersion)'
+    
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov
+      displayName: 'Install dependencies'
+    
+    - script: |
+        flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        black --check src/
+      displayName: 'Lint code'
+    
+    - script: |
+        pytest tests/ -v --cov=src --cov-report=xml
+      displayName: 'Run tests'
+    
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFiles: '**/test-*.xml'
+      condition: succeededOrFailed()
+    
+    - task: PublishCodeCoverageResults@1
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.xml'
+      condition: succeededOrFailed()
+
+- stage: Deploy
+  displayName: Deploy to Azure
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployJob
+    displayName: Deploy
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureWebAppContainer@1
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              appName: '$(webAppName)'
+              containers: 'expense-categorizer:latest'
+              resourceGroupName: '$(resourceGroupName)'
+          
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Deployment completed successfully"
+                echo "Application URL: https://$(webAppName).azurewebsites.net"
+
